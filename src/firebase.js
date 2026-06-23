@@ -1,16 +1,21 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+// Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+import { getAnalytics } from "firebase/analytics";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
 
+// Your web app's Firebase configuration
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyCUIfXeUqW-H60F3dPIfdmzlQbnl1TXWME",
-  authDomain: "movigo-adee1.firebaseapp.com",
-  projectId: "movigo-adee1",
-  storageBucket: "movigo-adee1.firebasestorage.app",
-  messagingSenderId: "1098160094657",
-  appId: "1:1098160094657:web:7df6bc543423ecd539c340"
+  apiKey: "AIzaSyAikW-opcIzFdyCyOkY9LXfWm0JHRzOc10",
+  authDomain: "voyo-554e7.firebaseapp.com",
+  projectId: "voyo-554e7",
+  storageBucket: "voyo-554e7.firebasestorage.app",
+  messagingSenderId: "410880500289",
+  appId: "1:410880500289:web:16bfff93d4357585059cc0",
+  measurementId: "G-Y20DLNGMQQ"
 };
 
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
-export const db = getFirestore(app);
+const analytics = getAnalytics(app);
