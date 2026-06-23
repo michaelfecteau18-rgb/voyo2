@@ -1,0 +1,128 @@
+rules_version = '2';
+
+// VOYO / Adaptiride — Firestore security rules
+// Specs: specs/P0-3-firestore-security-rules.md, specs/passenger-route-model.md (P1-6)
+//
+// Design principles:
+//   1. Deny by default — every path not explicitly allowed is rejected.
+//   2. Authentication required for all access.
+//   3. Drivers may write only their own trip (driverId == uid), the GPS points
+//      belonging to that trip, and that trip's per-passenger stops + statusEvents.
+//   4. Admin/dispatcher read access is gated by isAdmin() — a custom claim
+//      (request.auth.token.admin == true) OR an allowlist doc admins/{uid}.
+//   5. passengers/* and routes/* are the dispatcher-managed source of truth:
+//      admin writes only, authenticated read.
+//
+// IMPORTANT: GPS points live in a TOP-LEVEL `locations/{tripId}/points`
+// collection (see src/driver/ActiveRoute.jsx), NOT under trips/{tripId}.
+// Per-passenger status (P1-6) DOES live under the trip:
+//   trips/{tripId}/stops/{passengerId}        (stop doc id == passengerId)
+//   trips/{tripId}/statusEvents/{eventId}     (append-only fan-out)
+// Ownership of any trip subdocument is resolved by reading the parent trip's
+// driverId via tripDriverId(tripId).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+        (request.auth.token.admin == true ||
+         exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function tripDriverId(tripId) {
+      return get(/databases/$(database)/documents/trips/$(tripId)).data.driverId;
+    }
+
+    // Owns the parent trip referenced by a subcollection path.
+    function ownsTrip(tripId) {
+      return isSignedIn() && tripDriverId(tripId) == request.auth.uid;
+    }
+
+    // P1-6 passenger-lifecycle vocabulary (snake_case; spec §5).
+    function validStopStatus(s) {
+      return s in ['scheduled', 'en_route', 'arrived', 'onboard',
+                   'dropped_off', 'no_show', 'cancelled'];
+    }
+
+    // --- Trips: created/updated by the owning driver; read by owner or admin ---
+    match /trips/{tripId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && resource.data.driverId == request.auth.uid);
+
+      // First write to a trip is a create; the incoming doc must claim the
+      // caller as its driver and carry a valid state-machine status.
+      allow create: if isSignedIn()
+        && request.resource.data.driverId == request.auth.uid
+        && request.resource.data.status in
+             ['scheduled', 'assigned', 'active', 'completed', 'cancelled'];
+
+      // Subsequent merge writes (GPS updates, completion) are updates; only the
+      // owning driver may update, and ownership may not be reassigned.
+      allow update: if isSignedIn()
+        && resource.data.driverId == request.auth.uid
+        && request.resource.data.driverId == request.auth.uid;
+
+      allow delete: if false;
+    }
+
+    // --- P1-6: live per-passenger status; doc id == passengerId ---
+    match /trips/{tripId}/stops/{passengerId} {
+      allow read: if isAdmin() || ownsTrip(tripId);
+
+      allow create, update: if ownsTrip(tripId)
+        && validStopStatus(request.resource.data.status);
+
+      allow delete: if false;
+    }
+
+    // --- P1-6: append-only status event log (fan-out for SMS/portals) ---
+    match /trips/{tripId}/statusEvents/{eventId} {
+      allow read: if isAdmin() || ownsTrip(tripId);
+
+      allow create: if ownsTrip(tripId);
+
+      // Immutable audit trail.
+      allow update, delete: if false;
+    }
+
+    // --- GPS points: top-level locations/{tripId}/points/{pointId} ---
+    match /locations/{tripId}/points/{pointId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && tripDriverId(tripId) == request.auth.uid);
+
+      allow create: if isSignedIn()
+        && tripDriverId(tripId) == request.auth.uid;
+
+      // Points are an append-only audit trail.
+      allow update, delete: if false;
+    }
+
+    // --- P1-6: passenger identity master (dispatcher-managed SSOT) ---
+    match /passengers/{passengerId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // --- P1-6: route plan master (dispatcher-managed SSOT) ---
+    match /routes/{routeId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // --- Admin allowlist: readable by signed-in users, managed out-of-band ---
+    match /admins/{uid} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // --- Deny everything else ---
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
